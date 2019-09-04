@@ -1,4 +1,4 @@
-## Bob Barks
+## A-maze-ing Buttons
 KTaNE mod module.
 
 ## Note
