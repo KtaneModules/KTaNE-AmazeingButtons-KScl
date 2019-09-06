@@ -647,6 +647,11 @@ public class MazeButtons : MonoBehaviour
 		Match mt;
 		string errorString;
 
+		// Replace words for cardinal directions with single letters.
+		command = Regex.Replace(command, @"(north|east|south|west|up|down|left|right)(\s+|$)", delegate(Match rpmt) {
+			return rpmt.Value[0].ToString();
+		}, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
 		if ((mt = Regex.Match(command, @"^\s*(?:press|tap)\s+([newsUDLR]+)\s*$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)).Success)
 		{
 			// I hate this.
@@ -762,7 +767,7 @@ public class MazeButtons : MonoBehaviour
 					int t;
 					for (int i = 1; i < cList.Length; ++i)
 					{
-						if (cList.Equals("on"))
+						if (cList[i].Equals("on"))
 							continue;
 
 						t = int.Parse(cList[i]);
@@ -842,8 +847,7 @@ public class MazeButtons : MonoBehaviour
 		if (moduleSolved)
 			return;
 
-		Debug.LogFormat("[A-maze-ing Buttons #{0}] SOLVE: Twitch Plays requested a solve.",
-			thisLogID, (cX + 1) / 2, (cY + 1) / 2);
+		Debug.LogFormat("[A-maze-ing Buttons #{0}] SOLVE: Twitch Plays requested a solve.", thisLogID);
 		ClearSevenSegment();
 		bombModule.HandlePass();
 		moduleSolved = true;
