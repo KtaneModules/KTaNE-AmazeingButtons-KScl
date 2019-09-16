@@ -720,21 +720,16 @@ public class MazeButtons : MonoBehaviour
 				break;
 			case ReleaseType.Exact:
 				// args == List of seconds digits to try to use
-				targetTime = -1;
-				foreach (int t in args)
+				int i = 0;
+				for (; i < 120; ++i)
 				{
-					int time = t;
-					while (time < currentTime)
-						time += 60;
-					if (timerDirection == -1)
-					{
-						time -= 60;
-						if (time > targetTime)
-							targetTime = time;
-					}
-					else if (targetTime == -1 || time < targetTime)
-						targetTime = time;
+					if (Array.IndexOf(args, targetTime % 60) != -1)
+						break;
+					if ((targetTime += timerDirection) < 0)
+						break;
 				}
+				if (i == 120) // Realistically this should never happen. This is here to catch if it somehow does and return an error.
+					targetTime = -1;
 				break;
 			default: // Should be unreachable
 				break;
