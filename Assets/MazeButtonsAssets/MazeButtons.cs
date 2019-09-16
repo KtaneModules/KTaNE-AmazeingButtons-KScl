@@ -636,6 +636,113 @@ public class MazeButtons : MonoBehaviour
 		return true;
 	}
 
+	enum ReleaseType {
+		Invalid = -1,
+		Any = 1,
+		Present = 2,
+		NotPresent = 3,
+		Exact = 4
+	};
+
+	private ReleaseType GetReleaseType(string command, out int[] args)
+	{
+		Match mt;
+
+		args = null;
+
+		if (Regex.IsMatch(command, @"^\s*release\s*any\s*$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+			return ReleaseType.Any;
+		else if ((mt = Regex.Match(command, @"^\s*release\s*(?:on\s*)?(not\s*|)([\d])\s*$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)).Success)
+		{
+			args = new int[] { mt.Groups[2].ToString()[0] - '0' };
+			return mt.Groups[1].ToString().StartsWith("not") ? ReleaseType.NotPresent : ReleaseType.Present;
+		}
+		else if (Regex.IsMatch(command, @"^\s*release\s*(?:on\s*)?([\d]{2})\s*", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+		{
+			string[] cList = command.Split(' ');
+			List<int> times = new List<int>();
+			try
+			{
+				int t;
+				for (int i = 1; i < cList.Length; ++i)
+				{
+					if (cList[i].Equals("on"))
+						continue;
+
+					t = int.Parse(cList[i]);
+					if (t < 0 || t > 59)
+						return ReleaseType.Invalid;
+
+					times.Add(t);
+				}
+			}
+			catch (Exception) 
+			{
+				return ReleaseType.Invalid;
+			}
+
+			if (times.Count == 0)
+				return ReleaseType.Invalid;
+
+			args = times.ToArray();
+			return ReleaseType.Exact;
+		}
+		return ReleaseType.Invalid;
+	}
+
+	private int GetNextReleaseTime(ReleaseType type, int[] args, float currentTime, int timerDirection)
+	{
+		// To compensate for slight delays in TP releasing the button:
+		// Outside Zen mode
+		// If the timer is at xx.50 or greater, we'll try the timer value it's currently on. (30.50 = 30)
+		// If the timer is at xx.49 or lower, we'll skip the time it's currently on and move to the next. (30.49 = 29)
+		// In Zen mode
+		// If the timer is at xx.49 or lower, we'll try the timer value it's currently on. (30.49 = 30)
+		// If the timer is at xx.50 or greater,  we'll skip the time it's currently on and move to the next. (30.50 = 31)
+		int targetTime = (int)(currentTime + (timerDirection * 0.5f));
+		switch (type)
+		{
+			case ReleaseType.Present:
+				// args[0] == Requested digit to be present
+				while (!(targetTime % 10 == args[0] ^ (targetTime % 60) / 10 == args[0]))
+				{
+					if ((targetTime += timerDirection) < 0)
+						break;
+				}
+				break;
+			case ReleaseType.NotPresent:
+				// args[0] == Requested digit to be absent
+				while (targetTime % 10 == args[0] || (targetTime % 60) / 10 == args[0])
+				{
+					if ((targetTime += timerDirection) < 0)
+						break;
+				}
+				break;
+			case ReleaseType.Exact:
+				// args == List of seconds digits to try to use
+				targetTime = -1;
+				foreach (int t in args)
+				{
+					int time = t;
+					while (time < currentTime)
+						time += 60;
+					if (timerDirection == -1)
+					{
+						time -= 60;
+						if (time > targetTime)
+							targetTime = time;
+					}
+					else if (targetTime == -1 || time < targetTime)
+						targetTime = time;
+				}
+				break;
+			default: // Should be unreachable
+				break;
+		}
+
+		return targetTime;
+	}
+
 #pragma warning disable 414
 	private readonly string TwitchHelpMessage = @"'!{0} tap UUDDLRLR' | '!{0} hold U' | '!{0} release any' (any time) | '!{0} release on 4' (4 on either digit) | '!{0} release on not 2' (2 not present) | '!{0} release on 06 12 18' (exact number of seconds) | '!{0} reset' (return to the start)";
 #pragma warning restore 414
@@ -707,105 +814,31 @@ public class MazeButtons : MonoBehaviour
 		}
 		else if (Regex.IsMatch(command, @"^\s*release\s", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
 		{
+			int[] rArgs;
+			ReleaseType rType = GetReleaseType(command, out rArgs);
+			KMSelectable buttonToRelease;
+
+			if (rType == ReleaseType.Invalid)
+				yield break;
+
 			if (currentButton == -1)
 			{
 				yield return "sendtochaterror Trying to release a button works much better when you've actually held one down, you know.";
 				yield break;
 			}
-			if (currentButton < 0)
+			buttonToRelease = (currentButton < 0) ? resetButton : bSelects[currentButton];
+
+			// Command valid at this point. Get the bomb in position to release.
+			yield return null;
+
+			// Release whenever. In other words, right now and get out of here.
+			if (rType == ReleaseType.Any)
 			{
-				// This should never EVER happen, but as a failsafe, if reset is held down, any release command will stop it.
-				yield return null;
-				yield return resetButton;
+				yield return buttonToRelease;
 				yield break;
 			}
 
-			// Nothing additional; release whenever.
-			if (Regex.IsMatch(command, @"^\s*release\s*any\s*$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-			{
-				yield return null;
-				yield return bSelects[currentButton];
-				yield break;
-			}
-
-			int currentTime = (int)bombInfo.GetTime();
-			int targetTime = 0;
-			int tickDown = (TwitchZenMode) ? 1 : -1; // What direction is the timer ticking?
-
-			if ((mt = Regex.Match(command, @"^\s*release\s*(?:on\s*)?([\d])\s*$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)).Success)
-			{
-				// Release when digit is present
-				int requestedDigit = Convert.ToInt32(mt.Groups[1].ToString());
-				targetTime = currentTime + tickDown;
-
-				// Never, ever release on double digits, due to the last rule.
-				while (!(targetTime % 10 == requestedDigit ^ (targetTime % 60) / 10 == requestedDigit))
-				{
-					if ((targetTime += tickDown) < 0)
-						break;
-				}
-			}
-			else if ((mt = Regex.Match(command, @"^\s*release\s*(?:on\s*)?not\s*([\d])\s*$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)).Success)
-			{
-				// Release when digit is NOT present
-				int requestedDigit = Convert.ToInt32(mt.Groups[1].ToString());
-				targetTime = currentTime + tickDown;
-
-				while (targetTime % 10 == requestedDigit || (targetTime % 60) / 10 == requestedDigit)
-				{
-					if ((targetTime += tickDown) < 0)
-						break;
-				}			
-			}
-			else if (Regex.IsMatch(command, @"^\s*release\s*(?:on\s*)?([\d]{2})\s*", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-			{
-				// Release at specific seconds (listed times)
-				string[] cList = command.Split(' ');
-				List<int> times = new List<int>();
-				try
-				{
-					int t;
-					for (int i = 1; i < cList.Length; ++i)
-					{
-						if (cList[i].Equals("on"))
-							continue;
-
-						t = int.Parse(cList[i]);
-
-						if (t < 0 || t > 59)
-							yield break;
-
-						times.Add(t);
-					}
-				}
-				catch (Exception) 
-				{
-					yield break;
-				}
-
-				if (times.Count == 0)
-					yield break;
-
-				targetTime = -1;
-				for (int i = 0; i < times.Count; ++i)
-				{
-					while (times[i] < currentTime)
-						times[i] += 60;
-					if (!TwitchZenMode)
-					{
-						times[i] -= 60;
-						if (times[i] > targetTime)
-							targetTime = times[i];
-					}
-					else if (targetTime == -1 || times[i] < targetTime)
-						targetTime = times[i];
-				}
-			}
-			else
-			{
-				// Command not valid
-				yield break;
-			}
+			int targetTime = GetNextReleaseTime(rType, rArgs, bombInfo.GetTime(), (TwitchZenMode) ? 1 : -1);
 
 			if (targetTime < 0)
 			{
@@ -813,22 +846,18 @@ public class MazeButtons : MonoBehaviour
 				yield break;
 			}
 
-			string releaseTimeStr = String.Format("sendtochat Releasing the {0} button at {1:D2}:{2:D2}.",
-				__directions[currentButton], targetTime/60, targetTime%60);
-
-			yield return null;
-			yield return releaseTimeStr;
+			yield return String.Format("sendtochat Releasing the {0} button at {1:D2}:{2:D2}.", __directions[currentButton], targetTime/60, targetTime%60);
 
 			if (TwitchZenMode)
 			{
-				if (targetTime - currentTime > 15)
+				if (targetTime - (int)bombInfo.GetTime() > 15)
 					yield return "waiting music";
 				while ((int)bombInfo.GetTime() < targetTime)
 					yield return "trycancel your request to release the button was cancelled.";
 			}
 			else 
 			{
-				if (currentTime - targetTime > 15)
+				if ((int)bombInfo.GetTime() - targetTime > 15)
 					yield return "waiting music";
 				while ((int)bombInfo.GetTime() > targetTime)
 					yield return "trycancel your request to release the button was cancelled.";
