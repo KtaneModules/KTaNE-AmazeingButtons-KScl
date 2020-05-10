@@ -159,8 +159,15 @@ public class MazeButtons : MonoBehaviour
 		}
 	}
 
-	void ShowErrorOnSevenSegment(byte lit, SevenSegmentColor color)
+	void StrikeWithSevenSegmentHint(byte lit, SevenSegmentColor color)
 	{
+		if (TwitchIsAutoSolving)
+		{
+			Debug.LogFormat("[A-maze-ing Buttons #{0}] Ignoring the previous strike; the autosolver couldn't avoid it due to prior actions.", thisLogID);
+			return;
+		}
+
+		bombModule.HandleStrike();
 		for(int i = 0; i < 7; ++i)
 		{
 			if ((lit & (1 << i)) > 0)
@@ -337,7 +344,7 @@ public class MazeButtons : MonoBehaviour
 		yield break;
 	}
 
-	bool IsReleaseTimeCorrect()
+	bool IsReleaseTimeCorrect(out string returnStr)
 	{
 		int tSeconds = (int)bombInfo.GetTime() % 60;
 		bool valid = true;
@@ -408,15 +415,8 @@ public class MazeButtons : MonoBehaviour
 			invalidStr = String.Format("exactly one seconds digit is {0}", holdDigit);
 		}
 
-		if (!valid)
-		{
-			Debug.LogFormat("[A-maze-ing Buttons #{0}] STRIKE: I was expecting a time when {2}. You released at xx:{1}, which was incorrect.", 
-				thisLogID, tSeconds.ToString().PadLeft(2, '0'), invalidStr);
-			bombModule.HandleStrike();
-		}
-		else
-			Debug.LogFormat("[A-maze-ing Buttons #{0}] I was expecting a time when {2}. You released at xx:{1}, which was correct.", 
-				thisLogID, tSeconds.ToString().PadLeft(2, '0'), invalidStr);
+		returnStr = String.Format("I was expecting a time when {2}. You released at xx:{1}, which was {3}.",
+			thisLogID, tSeconds.ToString().PadLeft(2, '0'), invalidStr, valid ? "correct" : "incorrect");
 		return valid;
 	}
 
@@ -463,22 +463,26 @@ public class MazeButtons : MonoBehaviour
 			{
 				Debug.LogFormat("[A-maze-ing Buttons #{0}] STRIKE: Tried to tap to move from ({1}, {2}) to ({3}, {4}). You need to hold to do that.", 
 					thisLogID, (cX + 1) / 2, (cY + 1) / 2, (nX + 1) / 2, (nY + 1) / 2);
-				bombModule.HandleStrike();
-				ShowErrorOnSevenSegment(0x40, SevenSegmentColor.Yellow);
+				StrikeWithSevenSegmentHint(0x40, SevenSegmentColor.Yellow);
 				return;
 			}
 		}
 		else
 		{
-			// Handles the strike itself if it's necessary
-			if (!IsReleaseTimeCorrect())
+			string returnStr;
+			if (!IsReleaseTimeCorrect(out returnStr))
+			{
+				Debug.LogFormat("[A-maze-ing Buttons #{0}] STRIKE: {1}", thisLogID, returnStr);
+				bombModule.HandleStrike();
 				return;
+			}
+			Debug.LogFormat("[A-maze-ing Buttons #{0}] {1}", thisLogID, returnStr);
+
 			if (__maze[mY][mX] == ' ')
 			{
 				Debug.LogFormat("[A-maze-ing Buttons #{0}] STRIKE: Tried to hold to move from ({1}, {2}) to ({3}, {4}). You need to tap to do that.", 
 					thisLogID, (cX + 1) / 2, (cY + 1) / 2, (nX + 1) / 2, (nY + 1) / 2);
-				bombModule.HandleStrike();
-				ShowErrorOnSevenSegment(0x40, SevenSegmentColor.Green);
+				StrikeWithSevenSegmentHint(0x40, SevenSegmentColor.Green);
 				return;
 			}
 		}
@@ -487,8 +491,7 @@ public class MazeButtons : MonoBehaviour
 		{
 			Debug.LogFormat("[A-maze-ing Buttons #{0}] STRIKE: Tried to move from ({1}, {2}) to ({3}, {4}). There's a solid wall blocking your path.", 
 				thisLogID, (cX + 1) / 2, (cY + 1) / 2, (nX + 1) / 2, (nY + 1) / 2);
-			bombModule.HandleStrike();
-			ShowErrorOnSevenSegment(0x40, SevenSegmentColor.Red);
+			StrikeWithSevenSegmentHint(0x40, SevenSegmentColor.Red);
 			return;
 		}
 
@@ -866,14 +869,78 @@ public class MazeButtons : MonoBehaviour
 		yield break;
 	}
 
-	void TwitchHandleForcedSolve()
+	private bool TwitchIsAutoSolving = false;
+	private readonly string[] __autosolveMovements = new string[] {
+		"             ",
+		" rulLlddrrRD ",
+		" dlUudlDrduR ",
+		" RruuLrrRdru ",
+		" uuuulurdrdu ",
+		" rrUlluurDru ",
+		" uluruLurddd ",
+		" ddurdrRdrdd ",
+		" druDlrurDRd ",
+		" rdrddllrrRd ",
+		" LruRdrddlld ",
+		" ullllLllrdl ",
+		"             ",
+	};
+
+	public IEnumerator TwitchHandleForcedSolve()
 	{
 		if (moduleSolved)
-			return;
+			yield break;
 
-		Debug.LogFormat("[A-maze-ing Buttons #{0}] SOLVE: Twitch Plays requested a solve.", thisLogID);
-		ClearSevenSegment();
-		bombModule.HandlePass();
-		moduleSolved = true;
+		TwitchIsAutoSolving = true;
+		Debug.LogFormat("[A-maze-ing Buttons #{0}] Twitch Plays requested a solve.", thisLogID);
+
+		while (!moduleSolved)
+		{
+			if (currentButton < -1)
+			{
+				// Release the reset button (only possible via prior actions)
+				resetButton.OnInteractEnded();
+				yield return true;
+			}
+			else if (currentButton != -1)
+			{
+				// Hold a button until the release time is valid
+				string dummy;
+				while (!buttonHeld)
+					yield return true;
+				while (!IsReleaseTimeCorrect(out dummy))
+					yield return true;
+				bSelects[currentButton].OnInteractEnded();
+			}
+			else
+			{
+				// Make tap movements
+				bool hold = false;
+				int button = 0;
+				switch (__autosolveMovements[(cY + 1) / 2][(cX + 1) / 2])
+				{
+					case 'U': hold = true; goto case 'u';
+					case 'R': hold = true; goto case 'r';
+					case 'D': hold = true; goto case 'd';
+					case 'L': hold = true; goto case 'l';
+					case 'u': button = 0; break;
+					case 'r': button = 1; break;
+					case 'd': button = 2; break;
+					case 'l': button = 3; break;
+					default: 
+						bombModule.HandleStrike();
+						yield break;
+				}
+				button = (button + rotation) % 4;
+				bSelects[button].OnInteract();
+				if (!hold)
+				{
+					// If not a hold, immediately release
+					yield return new WaitForSeconds(0.1f);
+					bSelects[button].OnInteractEnded();
+				}
+			}
+			yield return new WaitForSeconds(0.1f);
+		}
 	}
 }
